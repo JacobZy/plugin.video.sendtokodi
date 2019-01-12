@@ -1,0 +1,153 @@
+# -*- coding: utf-8 -*-
+import json
+import os
+import sys
+import re
+import xbmc
+import xbmcaddon
+import xbmcgui
+import xbmcplugin
+import requests
+from youtube_dl import YoutubeDL
+
+BASE_PATH = '/storage/emulated/0/myfile/'
+SRT_FILE = ''.join([BASE_PATH, '%s.srt'])
+
+class replacement_stderr(sys.stderr.__class__):
+    def isatty(self): return False
+
+
+sys.stderr.__class__ = replacement_stderr
+
+
+
+def debug(content):
+    log(content, xbmc.LOGDEBUG)
+
+
+def notice(content):
+    log(content, xbmc.LOGNOTICE)
+
+
+def log(msg, level=xbmc.LOGNOTICE):
+    addon = xbmcaddon.Addon()
+    addonID = addon.getAddonInfo('id')
+    xbmc.log('%s: %s' % (addonID, msg), level)
+
+
+def showInfoNotification(message):
+    xbmcgui.Dialog().notification("SendToKodi", message, xbmcgui.NOTIFICATION_INFO, 5000)
+
+
+def showErrorNotification(message):
+    xbmcgui.Dialog().notification("SendToKodi", message,
+                                  xbmcgui.NOTIFICATION_ERROR, 5000)
+
+
+# Get the plugin url in plugin:// notation.
+__url__ = sys.argv[0]
+# Get the plugin handle as an integer number.
+__handle__ = int(sys.argv[1])
+
+
+def getParams():
+    result = {}
+    paramstring = sys.argv[2]
+    additionalParamsIndex = paramstring.find(' ')
+    if additionalParamsIndex == -1:
+        result['url'] = paramstring[1:]
+        result['ydlOpts'] = {}
+    else:
+        result['url'] = paramstring[1:additionalParamsIndex]
+        additionalParamsString = paramstring[additionalParamsIndex:]
+        additionalParams = json.loads(additionalParamsString)
+        result['ydlOpts'] = additionalParams['ydlOpts']
+    return result
+
+
+
+
+def _write_file(_file, contents):	
+	xbmc.log('Writing subtitle file: %s' % _file)
+	try:
+	    f = xbmcvfs.File(_file, 'w')
+	    f.write(contents)
+	    f.close()
+	    return True
+	except:
+	    xbmc.log('File write failed for: %s' % _file)
+	    return False
+
+
+def _unescape(text):
+        try:
+            text = text.decode('utf8', 'ignore')
+        except:
+            xbmc.log('Subtitle unescape: failed to decode utf-8')
+        #try:
+        #    text = html_parser.HTMLParser().unescape(text)
+        #except:
+        #    xbmc.log('Subtitle unescape: failed to unescape text')
+        return text
+
+def srt_filename(title):
+        return SRT_FILE % (title)
+
+def createListItemFromVideo(video):
+    debug(video)
+    url = video['url']
+    thumbnail = video.get('thumbnail')
+    title = video['title']
+    list_item = xbmcgui.ListItem(title, path=url)
+    list_item.setInfo(type='Video', infoLabels={'Title': title})
+
+    captionre= re.match(r'https://.*?youtube.com/.*?v=(.*?)&',orgurl+'&')
+    if captionre != None:
+        captionurl = ("https://www.youtube.com/api/timedtext?v=%s&fmt=vtt&lang=en" % (captionre.group(1)))
+        #list_item.setSubtitles([captionurl])
+
+        fname = srt_filename(title)
+        result_auto = requests.get(captionurl, allow_redirects=True, proxies={'https':'socks5:127.0.0.1'})
+
+        if result_auto.text:
+            xbmc.log('Subtitle found for: %s' % title)
+            _write_file(fname, bytearray(_unescape(result_auto.text), encoding='utf8', errors='ignore'))
+        else:
+            xbmc.log('Failed to retrieve subtitles for: %s' % title)
+    
+    if thumbnail is not None:
+        list_item.setArt({'thumb': thumbnail})
+
+    return list_item
+   
+
+ydl_opts = {
+    'format': 'best'
+}
+
+params = getParams()
+url = str(params['url'])
+orgurl=url
+ydl_opts.update(params['ydlOpts'])
+ydl = YoutubeDL(ydl_opts)
+ydl.add_default_info_extractors()
+
+with ydl:
+    showInfoNotification("resolving stream(s) for " + url)
+    result = ydl.extract_info(url, download=False)
+
+if 'entries' in result:
+    # Playlist
+    pl = xbmc.PlayList(1)
+    pl.clear()
+    for video in result['entries']:
+        list_item = createListItemFromVideo(video);
+        xbmc.PlayList(1).add(list_item.getPath(), list_item)
+    xbmc.Player().play(pl)
+    showInfoNotification("playing playlist " + result['title'])
+else:
+    # Just a video, pass the item to the Kodi player.
+    showInfoNotification("playing title " + result['title'])
+    xbmcplugin.setResolvedUrl(__handle__, True, listitem=createListItemFromVideo(result))
+
+    
